@@ -20,8 +20,8 @@ parser.add_argument('--BATCH_SIZE_POWER', type=int, default=10, metavar='N',
                     help='batch size for power method in training (default: 10)')
 parser.add_argument('--SUBSAMPLE_SIZE', type=int, default=10, metavar='N',
                     help='subsample size (how many mini-batch) for tracking gradient norm (default: 10)')
-parser.add_argument('--TRACK_INTERVAL', type=int, default=50, metavar='N',
-                    help='interval size for tracking gradient norm (default: 50)')
+parser.add_argument('--TRACK_INTERVAL', type=int, default=200, metavar='N',
+                    help='interval size for tracking gradient norm (default: 200)')
 parser.add_argument('--LR', type=float, default=0.001, metavar='LR',
                     help='learning rate for Adam (default: 0.001)')
 parser.add_argument('--LR_POWER', type=float, default=0.5, metavar='LR',
@@ -38,8 +38,12 @@ parser.add_argument('--LAMBDA_POWER', type=float, default=5.0, metavar='L',
                     help='normalization term for power method (default: 5.0)')
 parser.add_argument('--ETA_NEG', type=float, default=0.5, metavar='L',
                     help='step size for negative curvature descent (default: 0.5)')
+parser.add_argument('--NO_CUDA', action='store_true', default=False,
+                    help='disables CUDA training')
 
 args = parser.parse_args()
+
+args.cuda = not args.NO_CUDA and torch.cuda.is_available()
 
 #  MNIST dataset
 train_data = torchvision.datasets.MNIST(
@@ -146,7 +150,10 @@ class AutoEncoder(nn.Module):
 
             inputs, labels = data
             # wrap data and target into variable
-            inputs, labels = Variable(inputs), Variable(labels)
+            if args.cuda:
+                inputs, labels = Variable(inputs).cuda(), Variable(labels).cuda()
+            else:
+                inputs, labels = Variable(inputs), Variable(labels)
 
             large_batch_loss += (1.0 / num_batch) * self.partial_grad(inputs, loss_function).data[0]
 
@@ -197,6 +204,8 @@ class AutoEncoder(nn.Module):
 
         for param_iter in iter_net.parameters():
             param_iter.data /= norm_iter
+        if args.cuda:
+            iter_net.cuda()
 
         # estimate_value represents v^{T}Hv
         estimate_value = 0.0
@@ -210,7 +219,8 @@ class AutoEncoder(nn.Module):
             # zero net_aux for sum up
             for param in iter_net_aux_1.parameters():
                 param.data = torch.zeros(param.data.size())
-
+            if args.cuda:
+                iter_net_aux_1.cuda()
             iter_net_vr = copy.deepcopy(iter_net)
 
             # calculate the large batch Hessian vector product
@@ -223,8 +233,10 @@ class AutoEncoder(nn.Module):
                 inputs, labels = data
 
                 # wrap data and target into variable
-                input_data, labels = Variable(inputs), Variable(labels)
-
+                if args.cuda:
+                    input_data, labels = Variable(inputs).cuda(), Variable(labels).cuda()
+                else:
+                    input_data, labels = Variable(inputs), Variable(labels)
                 # zero the gradient
                 start_net.zero_grad()
                 # reshape the input
@@ -271,8 +283,10 @@ class AutoEncoder(nn.Module):
                 inputs, labels = data
 
                 # wrap data and target into variable
-                input_data, labels = Variable(inputs), Variable(labels)
-
+                if args.cuda:
+                    input_data, labels = Variable(inputs).cuda(), Variable(labels).cuda()
+                else:
+                    input_data, labels = Variable(inputs), Variable(labels)
                 # zero the gradient
                 start_net.zero_grad()
                 input_data = input_data.view(-1, 28 * 28)
@@ -352,6 +366,8 @@ class AutoEncoder(nn.Module):
 
 # initial the auto-encoder
 autoencoder = AutoEncoder()
+if args.cuda:
+    autoencoder.cuda()
 
 # use Adam as optimizer
 optimizer = torch.optim.Adam(autoencoder.parameters(), lr=args.LR)
@@ -363,11 +379,13 @@ loss_func = nn.MSELoss()
 for epoch in range(args.EPOCH):
     for step, (x, y) in enumerate(train_loader):
         # training
-        autoencoder.train()
         # reshape batch x, shape (batch, 28*28)
-        b_x = Variable(x.view(-1, 28 * 28))
-        b_y = Variable(x.view(-1, 28 * 28))
-
+        if args.cuda:
+            b_x = Variable(x.view(-1, 28 * 28)).cuda()
+            b_y = Variable(x.view(-1, 28 * 28)).cuda()
+        else:
+            b_x = Variable(x.view(-1, 28 * 28))
+            b_y = Variable(x.view(-1, 28 * 28))
         # get the decode
         decoded = autoencoder(b_x)
         # mean square error (MSE) loss
@@ -380,7 +398,6 @@ for epoch in range(args.EPOCH):
         optimizer.step()
 
         if step % args.TRACK_INTERVAL == 0:
-            autoencoder.eval()
             print('EPOCH: ', epoch)
 
             # print the training loss and gradient norm for training data

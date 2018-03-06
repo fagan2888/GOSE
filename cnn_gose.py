@@ -23,13 +23,13 @@ parser.add_argument('--BATCH_SIZE_POWER', type=int, default=10, metavar='N',
                     help='batch size for power method in training (default: 10)')
 parser.add_argument('--SUBSAMPLE_SIZE', type=int, default=10, metavar='N',
                     help='subsample size (how many mini-batch) for tracking gradient norm (default: 10)')
-parser.add_argument('--TRACK_INTERVAL', type=int, default=50, metavar='N',
-                    help='interval size for tracking gradient norm (default: 50)')
+parser.add_argument('--TRACK_INTERVAL', type=int, default=100, metavar='N',
+                    help='interval size for tracking gradient norm (default: 100)')
 parser.add_argument('--LR', type=float, default=0.001, metavar='LR',
                     help='learning rate for Adam (default: 0.001)')
 parser.add_argument('--LR_POWER', type=float, default=0.5, metavar='LR',
                     help='learning rate for power method (default: 0.5)')
-parser.add_argument('--NORM_THRESHOLD', type=float, default=0.001, metavar='LR',
+parser.add_argument('--NORM_THRESHOLD', type=float, default=0.1, metavar='LR',
                     help='threshold for gradient norm (default: 0.001)')
 parser.add_argument('--EPOCH', type=int, default=100, metavar='LR',
                     help='total epoch (data pass) for the algorithm (default: 100)')
@@ -41,8 +41,13 @@ parser.add_argument('--LAMBDA_POWER', type=float, default=5.0, metavar='L',
                     help='normalization term for power method (default: 5.0)')
 parser.add_argument('--ETA_NEG', type=float, default=0.5, metavar='L',
                     help='step size for negative curvature descent (default: 0.5)')
+parser.add_argument('--NO_CUDA', action='store_true', default=False,
+                    help='disables CUDA training')
 
 args = parser.parse_args()
+
+args.cuda = not args.NO_CUDA and torch.cuda.is_available()
+
 
 # The output of torchvision datasets are PILImage images of range [0, 1].
 # We transform them to Tensors of normalized range [-1, 1]
@@ -101,34 +106,35 @@ class Net(nn.Module):
 
         return loss_partial
 
-    def calculate_loss_grad(self, dataset, loss_function, large_batch_num):
+    def calculate_loss_grad(self, dataset, loss_function, number_batch):
         """
         Function to compute the large-batch loss and the large-batch gradient
-        args : dataset, loss function and number of samples
+        args : dataset, loss function and number of batches
         return : large_batch_loss and large_batch_norm
         """
 
         large_batch_loss = 0.0
         large_batch_norm = 0.0
 
-        num_batch = large_batch_num
-
         for data_i, data in enumerate(dataset):
             # only calculate the sub-sampled large batch
-            if data_i > num_batch - 1:
+            if data_i > number_batch - 1:
                 break
 
             inputs, labels = data
             # wrap data and target into variable
-            inputs, labels = Variable(inputs), Variable(labels)
+            if args.cuda:
+                inputs, labels = Variable(inputs).cuda(), Variable(labels).cuda()
+            else:
+                inputs, labels = Variable(inputs), Variable(labels)
 
-            large_batch_loss += (1.0 / num_batch) * self.partial_grad(inputs, labels, loss_function).data[0]
+            large_batch_loss += (1.0 / number_batch) * self.partial_grad(inputs, labels, loss_function).data[0]
 
         # calculate the norm of the large-batch gradient
         for param in self.parameters():
             large_batch_norm += param.grad.data.norm(2) ** 2
 
-        large_batch_norm = np.sqrt(large_batch_norm) / num_batch
+        large_batch_norm = np.sqrt(large_batch_norm) / number_batch
 
         print('large batch loss:', large_batch_loss)
         print('large batch norm:', large_batch_norm)
@@ -172,6 +178,9 @@ class Net(nn.Module):
         for param_iter in iter_net.parameters():
             param_iter.data /= norm_iter
 
+        if args.cuda:
+            iter_net.cuda()
+
         # estimate_value represents v^{T}Hv
         estimate_value = 0.0
         # SCSG for PCA
@@ -184,7 +193,8 @@ class Net(nn.Module):
             # zero net_aux for sum up
             for param in iter_net_aux_1.parameters():
                 param.data = torch.zeros(param.data.size())
-
+            if args.cuda:
+                iter_net_aux_1.cuda()
             iter_net_vr = copy.deepcopy(iter_net)
 
             # calculate the large batch Hessian vector product
@@ -197,7 +207,10 @@ class Net(nn.Module):
                 inputs, labels = data
 
                 # wrap data and target into variable
-                input_data, labels = Variable(inputs), Variable(labels)
+                if args.cuda:
+                    input_data, labels = Variable(inputs).cuda(), Variable(labels).cuda()
+                else:
+                    input_data, labels = Variable(inputs), Variable(labels)
 
                 # zero the gradient
                 start_net.zero_grad()
@@ -244,7 +257,10 @@ class Net(nn.Module):
                 inputs, labels = data
 
                 # wrap data and target into variable
-                input_data, labels = Variable(inputs), Variable(labels)
+                if args.cuda:
+                    input_data, labels = Variable(inputs).cuda(), Variable(labels).cuda()
+                else:
+                    input_data, labels = Variable(inputs), Variable(labels)
 
                 # zero the gradient
                 start_net.zero_grad()
@@ -325,6 +341,9 @@ class Net(nn.Module):
 # initial the CNN
 cnn_net = Net()
 
+if args.cuda:
+    cnn_net.cuda()
+
 # use Adam as optimizer
 optimizer = optim.Adam(cnn_net.parameters(), lr=args.LR)
 
@@ -335,12 +354,15 @@ loss_func = nn.CrossEntropyLoss()
 for epoch in range(args.EPOCH):
 
     for step, data in enumerate(trainloader):
-        cnn_net.train()
+
         # get the inputs
         inputs, labels = data
 
         # wrap them in Variable
-        inputs, labels = Variable(inputs), Variable(labels)
+        if args.cuda:
+            inputs, labels = Variable(inputs).cuda(), Variable(labels).cuda()
+        else:
+            inputs, labels = Variable(inputs), Variable(labels)
 
         # zero the parameter gradients
         optimizer.zero_grad()
@@ -353,7 +375,6 @@ for epoch in range(args.EPOCH):
 
         # print every args.TRACK_INTERVAL mini-batches
         if step % args.TRACK_INTERVAL == 0:
-            cnn_net.eval()
 
             # print the training loss and gradient norm for training data
             cnn_net.zero_grad()
@@ -368,3 +389,4 @@ for epoch in range(args.EPOCH):
             # if the norm of gradient is small, take negative curvature descent step
             if full_grad_norm < args.NORM_THRESHOLD:
                 cnn_net.power_method(train_loader_power, loss_func, args)
+
